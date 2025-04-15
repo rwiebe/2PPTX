@@ -1,19 +1,10 @@
-version: '3.8'
-
+version: '3'
 services:
   app:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: 2pptx:latest
+    image: 2pptx:main
+    build: .
     ports:
-      - "$PORT:5000" # Externer Port 6002 wird auf internen Port 5000 gemappt
-    environment:
-      FLASK_ENV: production
-      FLASK_APP: app.py
-    volumes:
-      - .:/app # Bindet das aktuelle Verzeichnis ins Containerverzeichnis /app
-    working_dir: /app
+      - "$PORT:5000"
     labels:
       - "com.centurylinklabs.watchtower.enable=false"
     restart: always
