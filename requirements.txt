@@ -1,0 +1,5 @@
+# requirements.txt
+Flask
+python-pptx
+Pillow
+PyMuPDF

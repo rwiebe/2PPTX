@@ -1,0 +1,28 @@
+<!-- templates/index.html -->
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PPTX Konverter</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+    <h1>Bilder/PDF zu PPTX Konverter</h1>
+
+    <div class="container">
+        <form id="upload-form">
+            <div id="drop-zone">
+                <p>Dateien hierher ziehen oder</p>
+                <input type="file" id="file-input" name="files" multiple accept=".png,.jpg,.jpeg,.gif,.bmp,.tiff,.pdf">
+                <label for="file-input" class="file-button">Dateien auswählen</label>
+            </div>
+            <ul id="file-list"></ul>
+            <button type="submit" id="submit-button" disabled>PPTX erstellen & Herunterladen</button>
+        </form>
+        <div id="status"></div>
+    </div>
+
+    <script src="{{ url_for('static', filename='js/script.js') }}"></script>
+</body>
+</html>
