@@ -12,3 +12,4 @@ services:
       nginx_proxy_net:
 networks:
   nginx_proxy_net:
+    external: true
