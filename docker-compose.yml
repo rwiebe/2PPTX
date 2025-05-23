@@ -11,6 +11,16 @@ services:
     restart: always
     networks:
       nginx_proxy_net:
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 256M
+    environment:
+      - PYTHONUNBUFFERED=1
+      - PYTHONMALLOC=debug
+      - PYTHONTRACEMALLOC=1
 networks:
   nginx_proxy_net:
     external: true

@@ -10,6 +10,7 @@ from pptx.dml.color import RGBColor
 from PIL import Image, ImageOps # ImageOps für EXIF-Orientierung hinzufügen
 import fitz  # PyMuPDF
 import traceback # Für detaillierteres Error-Logging
+import gc  # Garbage Collector
 
 # --- Konstanten ---
 SLIDE_WIDTH_EMU = 9144000 # 10 inches
@@ -106,82 +107,60 @@ def add_image_centered(slide, image_stream):
 # --- ANGEPASSTE Route: /upload ---
 @app.route('/upload', methods=['POST'])
 def upload_files():
-    files = request.files.getlist('files')
-    if not files or all(f.filename == '' for f in files):
-        return jsonify({"error": "Keine Dateien ausgewählt"}), 400
-
-    processed_image_streams = [] # Streams nach Größenänderung/Orientierung
-
+    processed_image_streams = []
     try:
+        files = request.files.getlist('files')
+        if not files or all(f.filename == '' for f in files):
+            return jsonify({"error": "Keine Dateien ausgewählt"}), 400
+
         for file in files:
-            filename = file.filename.lower()
-            print(f"Verarbeite Datei: {file.filename}")
-            original_stream = io.BytesIO()
-            file.save(original_stream)
-            original_stream.seek(0)
+            try:
+                filename = file.filename.lower()
+                print(f"Verarbeite Datei: {file.filename}")
+                original_stream = io.BytesIO()
+                file.save(original_stream)
+                original_stream.seek(0)
 
-            if filename.endswith(('.png', '.jpg', '.jpeg', '.gif', '.bmp', '.tiff')):
-                processed_stream = process_image_stream(original_stream)
-                if processed_stream:
-                    processed_image_streams.append(processed_stream)
-                    print(f"Bild verarbeitet: {file.filename}")
-                else:
-                    print(f"Konnte Bild nicht verarbeiten: {file.filename}")
-
-            elif filename.endswith('.pdf'):
-                try:
+                if filename.endswith(('.png', '.jpg', '.jpeg', '.gif', '.bmp', '.tiff')):
+                    processed_stream = process_image_stream(original_stream)
+                    if processed_stream:
+                        processed_image_streams.append(processed_stream)
+                
+                elif filename.endswith('.pdf'):
                     pdf_document = fitz.open(stream=original_stream, filetype="pdf")
-                    print(f"Verarbeite PDF: {file.filename}, Seiten: {len(pdf_document)}")
-                    for page_num in range(len(pdf_document)):
-                        page = pdf_document.load_page(page_num)
-                        # DPI ggf. anpassen, 300 ist hochauflösend, braucht aber Speicher
-                        pix = page.get_pixmap(dpi=150) # Reduziert von 300 auf 150 zur Speicheroptimierung
-                        img_bytes = pix.tobytes("png")
-                        pdf_page_stream = io.BytesIO(img_bytes)
-                        pdf_page_stream.seek(0)
-
-                        # Jede PDF-Seite auch durch den Bildprozessor schicken
-                        processed_pdf_page_stream = process_image_stream(pdf_page_stream)
-                        if processed_pdf_page_stream:
-                            processed_image_streams.append(processed_pdf_page_stream)
-                            print(f"PDF Seite {page_num + 1} von {file.filename} verarbeitet")
-                        else:
-                            print(f"Konnte PDF Seite {page_num + 1} von {file.filename} nicht verarbeiten")
-                        pdf_page_stream.close() # Stream der rohen Seite schließen
-                    pdf_document.close()
-                except Exception as e:
-                    print(f"Fehler beim Verarbeiten der PDF {file.filename}:")
-                    traceback.print_exc()
-            else:
-                print(f"Überspringe nicht unterstützte Datei: {file.filename}")
-
-            original_stream.close() # Originalstream nach Verarbeitung schließen
+                    try:
+                        for page_num in range(len(pdf_document)):
+                            page = pdf_document.load_page(page_num)
+                            pix = page.get_pixmap(dpi=150)
+                            img_bytes = pix.tobytes("png")
+                            pdf_page_stream = io.BytesIO(img_bytes)
+                            processed_stream = process_image_stream(pdf_page_stream)
+                            if processed_stream:
+                                processed_image_streams.append(processed_stream)
+                            pdf_page_stream.close()
+                            del pix  # Explizit Pixmap freigeben
+                    finally:
+                        pdf_document.close()
+                
+                original_stream.close()
+                gc.collect()  # Garbage Collection erzwingen
+            
+            except Exception as e:
+                print(f"Fehler bei Datei {file.filename}: {str(e)}")
+                continue
 
         if not processed_image_streams:
-             return jsonify({"error": "Keine gültigen Bilder oder PDF-Seiten gefunden oder verarbeitet."}), 400
+            return jsonify({"error": "Keine gültigen Bilder gefunden"}), 400
 
         # Präsentation erstellen
-        prs = Presentation()
-        prs.slide_width = Emu(SLIDE_WIDTH_EMU)
-        prs.slide_height = Emu(SLIDE_HEIGHT_EMU)
+        pptx_io = create_presentation(processed_image_streams)
+        
+        # Aufräumen
+        for stream in processed_image_streams:
+            stream.close()
+        processed_image_streams.clear()
+        gc.collect()
 
-        # Folien erstellen und Bilder hinzufügen
-        for img_stream in processed_image_streams:
-            slide_layout = prs.slide_layouts[5] # Leere Folie
-            slide = prs.slides.add_slide(slide_layout)
-            background = slide.background
-            fill = background.fill
-            fill.solid()
-            fill.fore_color.rgb = RGBColor(0, 0, 0)
-
-            add_image_centered(slide, img_stream)
-            img_stream.close() # Verarbeiteten Stream nach Gebrauch schließen
-
-        # Präsentation speichern und senden
-        pptx_io = io.BytesIO()
-        prs.save(pptx_io)
-        pptx_io.seek(0)
-        print("PPTX erfolgreich erstellt.")
         return send_file(
             pptx_io,
             as_attachment=True,
@@ -190,15 +169,40 @@ def upload_files():
         )
 
     except Exception as e:
-        print(f"Genereller Fehler bei der Verarbeitung:")
-        traceback.print_exc()
-        # Streams sicherheitshalber schließen, falls noch offen
+        # Aufräumen im Fehlerfall
         for stream in processed_image_streams:
             try:
                 stream.close()
-            except Exception:
+            except:
                 pass
-        return jsonify({"error": f"Ein interner Fehler ist aufgetreten: {e}"}), 500
+        processed_image_streams.clear()
+        gc.collect()
+        return jsonify({"error": f"Verarbeitungsfehler: {str(e)}"}), 500
+
+# Neue Hilfsfunktion zum Erstellen der Präsentation
+def create_presentation(image_streams):
+    prs = Presentation()
+    prs.slide_width = Emu(SLIDE_WIDTH_EMU)
+    prs.slide_height = Emu(SLIDE_HEIGHT_EMU)
+
+    for img_stream in image_streams:
+        slide_layout = prs.slide_layouts[5]
+        slide = prs.slides.add_slide(slide_layout)
+        background = slide.background
+        fill = background.fill
+        fill.solid()
+        fill.fore_color.rgb = RGBColor(0, 0, 0)
+        add_image_centered(slide, img_stream)
+
+    pptx_io = io.BytesIO()
+    prs.save(pptx_io)
+    pptx_io.seek(0)
+    
+    # Referenzen aufräumen
+    del prs
+    gc.collect()
+    
+    return pptx_io
 
 # --- Rest des Codes (index Route, if __name__ == '__main__') bleibt gleich ---
 @app.route('/')

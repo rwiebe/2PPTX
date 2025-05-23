@@ -29,3 +29,10 @@ CMD ["flask", "run", "--host=0.0.0.0", "--port=5000"]
 
 # Alternativ für Produktion mit Gunicorn (müsste zu requirements.txt hinzugefügt werden):
 # CMD ["gunicorn", "--bind", "0.0.0.0:5000", "app:app"]
+
+# Memory Limits für Python hinzufügen
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONMALLOC=debug
+ENV PYTHONTRACEMALLOC=1
+
+# Container Memory Limits in docker-compose.yml setzen
