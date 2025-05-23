@@ -16,7 +16,7 @@ services:
         limits:
           memory: 512M
         reservations:
-          memory: 256M
+          memory: 96M
     environment:
       - PYTHONUNBUFFERED=1
       - PYTHONMALLOC=debug
