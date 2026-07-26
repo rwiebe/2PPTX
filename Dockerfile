@@ -1,44 +1,29 @@
-# Dockerfile
+FROM python:3.12-slim
 
-# 1. Basisimage auswählen (Python 3.9 als Beispiel)
-FROM python:3.9-slim
-
-# 2. Systemabhängigkeiten installieren (PyMuPDF benötigt evtl. build tools)
-#    Debian/Ubuntu basiert:
 ARG TZ=Europe/Berlin
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
-    tzdata \
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    TZ=${TZ}
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends tzdata \
     && rm -rf /var/lib/apt/lists/*
 
-# Zeitzone konfigurieren
-ENV TZ=${TZ}
-RUN ln -fs /usr/share/zoneinfo/${TZ} /etc/localtime && dpkg-reconfigure -f noninteractive tzdata
+RUN addgroup --system app \
+    && adduser --system --ingroup app --home /app app
 
-# 3. Arbeitsverzeichnis im Container setzen
 WORKDIR /app
 
-# 4. requirements.txt kopieren und Abhängigkeiten installieren
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir --disable-pip-version-check -r requirements.txt
 
-# 5. Restlichen Anwendungscode kopieren
-COPY . .
+COPY --chown=app:app . .
 
-# 6. Port freigeben, auf dem Flask läuft (muss mit app.run übereinstimmen)
+USER app
+
 EXPOSE 5000
 
-# 7. Befehl zum Starten der Anwendung definieren
-#    Verwendet Flask's eingebauten Server (gut für Entwicklung, für Produktion Gunicorn o.ä. erwägen)
-#    Host 0.0.0.0 ist wichtig, damit die App von außerhalb des Containers erreichbar ist.
-CMD ["flask", "run", "--host=0.0.0.0", "--port=5000"]
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/healthz', timeout=3)"]
 
-# Alternativ für Produktion mit Gunicorn (müsste zu requirements.txt hinzugefügt werden):
-# CMD ["gunicorn", "--bind", "0.0.0.0:5000", "app:app"]
-
-# Memory Limits für Python hinzufügen
-ENV PYTHONUNBUFFERED=1
-ENV PYTHONMALLOC=debug
-ENV PYTHONTRACEMALLOC=1
-
-# Container Memory Limits in docker-compose.yml setzen
+CMD ["gunicorn", "--bind=0.0.0.0:5000", "--workers=1", "--threads=2", "--timeout=300", "--access-logfile=-", "app:app"]

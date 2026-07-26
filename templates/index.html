@@ -5,11 +5,12 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>PPTX Konverter</title>
+    <link rel="icon" type="image/png" href="{{ url_for('static', filename='img/efk-logo.png') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
 </head>
 <body>
     <header class="hero">
-        <img src="https://efkb.de/wp-content/uploads/2024/10/cropped-cropped-Logo_EFK-Buende2015_orange-300x157-1.png" alt="EFK Logo" class="logo">
+        <img src="{{ url_for('static', filename='img/efk-logo.png') }}" alt="Logo der EFK Bünde" class="logo">
         <div class="hero-text">
             <h1>EFK PPTX Konverter</h1>
             <p>PDFs und Bilder in professionelle Präsentationen umwandeln</p>
@@ -26,7 +27,7 @@
             <ul id="file-list"></ul>
             <button type="submit" id="submit-button" disabled>PPTX erstellen & Herunterladen</button>
         </form>
-        <div id="status"></div>
+        <div id="status" role="status" aria-live="polite"></div>
     </div>
 
     <script src="{{ url_for('static', filename='js/script.js') }}"></script>

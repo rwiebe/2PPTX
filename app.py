@@ -1,215 +1,262 @@
-# app.py
 import io
+import logging
 import os
-from flask import Flask, request, render_template, send_file, jsonify
+import tempfile
+import warnings
+from pathlib import Path
+
+import fitz
+from flask import Flask, jsonify, render_template, request, send_file
+from PIL import Image, ImageOps, UnidentifiedImageError
 from pptx import Presentation
-from pptx.util import Inches, Pt, Emu
-from pptx.enum.shapes import MSO_SHAPE
-from pptx.enum.dml import MSO_THEME_COLOR
 from pptx.dml.color import RGBColor
-from PIL import Image, ImageOps # ImageOps für EXIF-Orientierung hinzufügen
-import fitz  # PyMuPDF
-import traceback # Für detaillierteres Error-Logging
-import gc  # Garbage Collector
+from pptx.util import Emu
 
-# --- Konstanten ---
-SLIDE_WIDTH_EMU = 9144000 # 10 inches
-SLIDE_HEIGHT_EMU = 5143500 # 5.625 inches
-MAX_IMG_WIDTH_PX = 1920
-MAX_IMG_HEIGHT_PX = 1080
 
-# --- Flask App Initialisierung ---
+SLIDE_WIDTH_EMU = 9_144_000
+SLIDE_HEIGHT_EMU = 5_143_500
+MAX_IMG_WIDTH_PX = 1_920
+MAX_IMG_HEIGHT_PX = 1_080
+ALLOWED_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".tiff", ".pdf"}
+
+Image.MAX_IMAGE_PIXELS = 25_000_000
+
 app = Flask(__name__)
-# Erhöhe das Limit für potenziell viele Dateien aus Ordnern
-app.config['MAX_CONTENT_LENGTH'] = 200 * 1024 * 1024  # Max Upload 200 MB
+app.config.from_mapping(
+    MAX_CONTENT_LENGTH=int(os.getenv("MAX_UPLOAD_MB", "100")) * 1024 * 1024,
+    MAX_FILES=int(os.getenv("MAX_FILES", "250")),
+    MAX_PDF_PAGES=int(os.getenv("MAX_PDF_PAGES", "250")),
+    MAX_SLIDES=int(os.getenv("MAX_SLIDES", "250")),
+)
 
-# --- NEUE Hilfsfunktion: Bild verarbeiten (Größe, Orientierung) ---
-def process_image_stream(image_stream):
-    """
-    Öffnet ein Bild aus einem Stream, korrigiert die Orientierung basierend auf EXIF,
-    ändert die Größe, falls es 1920x1080 überschreitet (unter Beibehaltung des Seitenverhältnisses),
-    und gibt einen neuen Stream mit dem verarbeiteten Bild (als PNG) zurück.
-    """
+logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
+logger = logging.getLogger(__name__)
+
+
+class ConversionError(ValueError):
+    """Fehler, der dem Benutzer als ungültige Eingabe gemeldet werden kann."""
+
+
+def _normalized_image_stream(image_source) -> io.BytesIO:
+    """Liest ein Bild, korrigiert EXIF und liefert ein begrenztes PNG."""
     try:
-        img = Image.open(image_stream)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", Image.DecompressionBombWarning)
+            with Image.open(image_source) as source:
+                source.seek(0)
+                source_format = source.format
+                image = ImageOps.exif_transpose(source)
+                image.load()
+                image.thumbnail(
+                    (MAX_IMG_WIDTH_PX, MAX_IMG_HEIGHT_PX),
+                    Image.Resampling.LANCZOS,
+                )
 
-        # 1. EXIF-Orientierung korrigieren
-        #    ImageOps.exif_transpose liest EXIF und wendet Rotation/Spiegelung an
-        img = ImageOps.exif_transpose(img)
-        print(f"EXIF-Orientierung angewendet (falls vorhanden).")
+                has_alpha = image.mode in {"RGBA", "LA"} or "transparency" in image.info
+                target_mode = "RGBA" if has_alpha else "RGB"
+                if image.mode != target_mode:
+                    image = image.convert(target_mode)
 
-        # 2. Größe ändern, wenn nötig
-        current_width, current_height = img.size
-        print(f"Originalgröße: {current_width}x{current_height}")
-
-        if current_width > MAX_IMG_WIDTH_PX or current_height > MAX_IMG_HEIGHT_PX:
-            # Seitenverhältnis beibehalten, auf Maximalgröße reduzieren
-            # thumbnail ändert das Bild Objekt 'in-place'
-            img.thumbnail((MAX_IMG_WIDTH_PX, MAX_IMG_HEIGHT_PX), Image.Resampling.LANCZOS)
-            new_width, new_height = img.size
-            print(f"Größe geändert auf: {new_width}x{new_height}")
-        else:
-            print("Keine Größenänderung erforderlich.")
-
-        # 3. Verarbeitetes Bild in einen neuen Stream speichern (PNG für verlustfreie Zwischenspeicherung)
-        output_stream = io.BytesIO()
-        img.save(output_stream, format='PNG')
-        output_stream.seek(0) # Wichtig: Stream zurücksetzen
-        img.close() # Original PIL Image schließen
-        return output_stream
-
-    except Exception as e:
-        print(f"Fehler beim Verarbeiten des Bild-Streams:")
-        traceback.print_exc()
-        # Im Fehlerfall versuchen, den Originalstream zurückzugeben (oder None)
-        image_stream.seek(0) # Zurücksetzen für den Fall, dass es doch noch geht
-        return image_stream # Oder return None und später darauf prüfen
+                output = io.BytesIO()
+                if source_format == "JPEG" and not has_alpha:
+                    image.save(output, format="JPEG", quality=92, optimize=True)
+                else:
+                    image.save(output, format="PNG")
+                output.seek(0)
+                return output
+    except (
+        UnidentifiedImageError,
+        Image.DecompressionBombWarning,
+        Image.DecompressionBombError,
+        OSError,
+        ValueError,
+    ) as exc:
+        raise ConversionError("Die Bilddatei ist beschädigt oder nicht unterstützt.") from exc
 
 
-# --- ANGEPASSTE Hilfsfunktion: Bild zentriert auf Folie hinzufügen ---
-def add_image_centered(slide, image_stream):
-    """Fügt ein Bild aus einem Stream zentriert auf einer Folie hinzu."""
+def _add_image_centered(slide, image_stream: io.BytesIO) -> None:
+    """Fügt ein Bild proportional und zentriert auf einer Folie ein."""
+    image_stream.seek(0)
+    with Image.open(image_stream) as image:
+        width_px, height_px = image.size
+
+    if width_px <= 0 or height_px <= 0:
+        raise ConversionError("Ein Bild besitzt ungültige Abmessungen.")
+
+    scale = min(SLIDE_WIDTH_EMU / width_px, SLIDE_HEIGHT_EMU / height_px)
+    width_emu = int(width_px * scale)
+    height_emu = int(height_px * scale)
+    left = int((SLIDE_WIDTH_EMU - width_emu) / 2)
+    top = int((SLIDE_HEIGHT_EMU - height_emu) / 2)
+
+    image_stream.seek(0)
+    slide.shapes.add_picture(
+        image_stream,
+        left,
+        top,
+        width=width_emu,
+        height=height_emu,
+    )
+
+
+def _add_slide(prs: Presentation, image_stream: io.BytesIO) -> None:
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    fill = slide.background.fill
+    fill.solid()
+    fill.fore_color.rgb = RGBColor(0, 0, 0)
+    _add_image_centered(slide, image_stream)
+
+
+def _render_pdf_pages(pdf_path: Path):
     try:
-        # Wichtig: Stream Position sicherstellen
-        image_stream.seek(0)
-        img = Image.open(image_stream)
-        img_width_px, img_height_px = img.size
-        # Hier img.close() weglassen, da der Stream weiter benötigt wird
+        document = fitz.open(pdf_path)
+    except (fitz.FileDataError, RuntimeError) as exc:
+        raise ConversionError("Die PDF-Datei ist beschädigt oder nicht unterstützt.") from exc
 
-        image_stream.seek(0) # Stream für add_picture zurücksetzen
-
-        # Skalierungsfaktor für Folie berechnen
-        scale_w = float(SLIDE_WIDTH_EMU) / img_width_px
-        scale_h = float(SLIDE_HEIGHT_EMU) / img_height_px
-        scale = min(scale_w, scale_h)
-
-        pic_width_emu = int(img_width_px * scale)
-        pic_height_emu = int(img_height_px * scale)
-        left = int((SLIDE_WIDTH_EMU - pic_width_emu) / 2)
-        top = int((SLIDE_HEIGHT_EMU - pic_height_emu) / 2)
-
-        slide.shapes.add_picture(image_stream, left, top, width=pic_width_emu, height=pic_height_emu)
-        print(f"Verarbeitetes Bild hinzugefügt: Pos=(L:{left}, T:{top}), Größe=(W:{pic_width_emu}, H:{pic_height_emu}), OrigPx=(W:{img_width_px}, H:{img_height_px})")
-
-    except Exception as e:
-        print(f"Fehler beim Hinzufügen des verarbeiteten Bildes zur Folie:")
-        traceback.print_exc()
-        # Fehler-Textbox als Fallback
-        try:
-            textbox = slide.shapes.add_textbox(Inches(1), Inches(1), Inches(8), Inches(1))
-            tf = textbox.text_frame
-            tf.text = f"Fehler beim Laden/Platzieren eines Bildes:\n{e}"
-            tf.paragraphs[0].font.color.rgb = RGBColor(255, 0, 0)
-            tf.word_wrap = True
-        except Exception:
-            pass # Wenn selbst das fehlschlägt
-
-# --- ANGEPASSTE Route: /upload ---
-@app.route('/upload', methods=['POST'])
-def upload_files():
-    processed_image_streams = []
     try:
-        files = request.files.getlist('files')
-        if not files or all(f.filename == '' for f in files):
-            return jsonify({"error": "Keine Dateien ausgewählt"}), 400
+        if document.needs_pass:
+            raise ConversionError("Passwortgeschützte PDFs werden nicht unterstützt.")
+        if document.page_count == 0:
+            raise ConversionError("Die PDF-Datei enthält keine Seiten.")
+        if document.page_count > app.config["MAX_PDF_PAGES"]:
+            page_word = "Seite" if app.config["MAX_PDF_PAGES"] == 1 else "Seiten"
+            raise ConversionError(
+                f"Eine PDF darf höchstens {app.config['MAX_PDF_PAGES']} "
+                f"{page_word} enthalten."
+            )
 
-        for file in files:
-            try:
-                filename = file.filename.lower()
-                print(f"Verarbeite Datei: {file.filename}")
-                original_stream = io.BytesIO()
-                file.save(original_stream)
-                original_stream.seek(0)
+        for page in document:
+            page_width = max(page.rect.width, 1)
+            page_height = max(page.rect.height, 1)
+            zoom = min(
+                MAX_IMG_WIDTH_PX / page_width,
+                MAX_IMG_HEIGHT_PX / page_height,
+            )
+            pixmap = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), alpha=False)
+            stream = io.BytesIO(pixmap.tobytes("png"))
+            stream.seek(0)
+            yield stream
+    except (fitz.FileDataError, RuntimeError) as exc:
+        raise ConversionError("Eine PDF-Seite konnte nicht gelesen werden.") from exc
+    finally:
+        document.close()
 
-                if filename.endswith(('.png', '.jpg', '.jpeg', '.gif', '.bmp', '.tiff')):
-                    processed_stream = process_image_stream(original_stream)
-                    if processed_stream:
-                        processed_image_streams.append(processed_stream)
-                
-                elif filename.endswith('.pdf'):
-                    pdf_document = fitz.open(stream=original_stream, filetype="pdf")
-                    try:
-                        for page_num in range(len(pdf_document)):
-                            page = pdf_document.load_page(page_num)
-                            pix = page.get_pixmap(dpi=150)
-                            img_bytes = pix.tobytes("png")
-                            pdf_page_stream = io.BytesIO(img_bytes)
-                            processed_stream = process_image_stream(pdf_page_stream)
-                            if processed_stream:
-                                processed_image_streams.append(processed_stream)
-                            pdf_page_stream.close()
-                            del pix  # Explizit Pixmap freigeben
-                    finally:
-                        pdf_document.close()
-                
-                original_stream.close()
-                gc.collect()  # Garbage Collection erzwingen
-            
-            except Exception as e:
-                print(f"Fehler bei Datei {file.filename}: {str(e)}")
-                continue
 
-        if not processed_image_streams:
-            return jsonify({"error": "Keine gültigen Bilder gefunden"}), 400
-
-        # Präsentation erstellen
-        pptx_io = create_presentation(processed_image_streams)
-        
-        # Aufräumen
-        for stream in processed_image_streams:
-            stream.close()
-        processed_image_streams.clear()
-        gc.collect()
-
-        return send_file(
-            pptx_io,
-            as_attachment=True,
-            download_name='presentation.pptx',
-            mimetype='application/vnd.openxmlformats-officedocument.presentationml.presentation'
-        )
-
-    except Exception as e:
-        # Aufräumen im Fehlerfall
-        for stream in processed_image_streams:
-            try:
-                stream.close()
-            except:
-                pass
-        processed_image_streams.clear()
-        gc.collect()
-        return jsonify({"error": f"Verarbeitungsfehler: {str(e)}"}), 500
-
-# Neue Hilfsfunktion zum Erstellen der Präsentation
-def create_presentation(image_streams):
+def _convert_uploads(files, workdir: Path, output_path: Path) -> int:
     prs = Presentation()
     prs.slide_width = Emu(SLIDE_WIDTH_EMU)
     prs.slide_height = Emu(SLIDE_HEIGHT_EMU)
+    slide_count = 0
 
-    for img_stream in image_streams:
-        slide_layout = prs.slide_layouts[5]
-        slide = prs.slides.add_slide(slide_layout)
-        background = slide.background
-        fill = background.fill
-        fill.solid()
-        fill.fore_color.rgb = RGBColor(0, 0, 0)
-        add_image_centered(slide, img_stream)
+    for index, uploaded_file in enumerate(files):
+        display_name = uploaded_file.filename or f"Datei {index + 1}"
+        extension = Path(display_name).suffix.lower()
+        if extension not in ALLOWED_EXTENSIONS:
+            raise ConversionError(f"„{display_name}“ hat einen nicht unterstützten Dateityp.")
 
-    pptx_io = io.BytesIO()
-    prs.save(pptx_io)
-    pptx_io.seek(0)
-    
-    # Referenzen aufräumen
-    del prs
-    gc.collect()
-    
-    return pptx_io
+        upload_path = workdir / f"upload-{index}{extension}"
+        uploaded_file.save(upload_path)
 
-# --- Rest des Codes (index Route, if __name__ == '__main__') bleibt gleich ---
-@app.route('/')
+        try:
+            if extension == ".pdf":
+                for page_stream in _render_pdf_pages(upload_path):
+                    try:
+                        if slide_count >= app.config["MAX_SLIDES"]:
+                            slide_word = (
+                                "Folie" if app.config["MAX_SLIDES"] == 1 else "Folien"
+                            )
+                            raise ConversionError(
+                                "Die Präsentation darf insgesamt höchstens "
+                                f"{app.config['MAX_SLIDES']} {slide_word} enthalten."
+                            )
+                        _add_slide(prs, page_stream)
+                        slide_count += 1
+                    finally:
+                        page_stream.close()
+            else:
+                image_stream = _normalized_image_stream(upload_path)
+                try:
+                    if slide_count >= app.config["MAX_SLIDES"]:
+                        slide_word = (
+                            "Folie" if app.config["MAX_SLIDES"] == 1 else "Folien"
+                        )
+                        raise ConversionError(
+                            "Die Präsentation darf insgesamt höchstens "
+                            f"{app.config['MAX_SLIDES']} {slide_word} enthalten."
+                        )
+                    _add_slide(prs, image_stream)
+                    slide_count += 1
+                finally:
+                    image_stream.close()
+        except ConversionError as exc:
+            raise ConversionError(f"Fehler in „{display_name}“: {exc}") from exc
+
+    if slide_count == 0:
+        raise ConversionError("Es wurden keine gültigen Seiten oder Bilder gefunden.")
+
+    prs.save(output_path)
+    return slide_count
+
+
+@app.errorhandler(413)
+def upload_too_large(_error):
+    max_mb = app.config["MAX_CONTENT_LENGTH"] // (1024 * 1024)
+    return jsonify(error=f"Der Upload darf insgesamt höchstens {max_mb} MB groß sein."), 413
+
+
+@app.get("/")
 def index():
-    return render_template('index.html')
+    return render_template("index.html")
 
-if __name__ == '__main__':
-    # app.run(debug=True, host='0.0.0.0', port=5000) # Für Debugging
-    app.run(debug=False, host='0.0.0.0', port=5000)
 
+@app.get("/healthz")
+def health():
+    return jsonify(status="ok")
+
+
+@app.post("/upload")
+def upload_files():
+    files = [file for file in request.files.getlist("files") if file.filename]
+    if not files:
+        return jsonify(error="Keine Dateien ausgewählt."), 400
+    if len(files) > app.config["MAX_FILES"]:
+        return jsonify(
+            error=f"Es dürfen höchstens {app.config['MAX_FILES']} Dateien hochgeladen werden."
+        ), 400
+
+    output_file = tempfile.NamedTemporaryFile(suffix=".pptx", delete=False)
+    output_path = Path(output_file.name)
+    output_file.close()
+
+    try:
+        with tempfile.TemporaryDirectory(prefix="2pptx-") as temp_dir:
+            slide_count = _convert_uploads(files, Path(temp_dir), output_path)
+
+        logger.info(
+            "Präsentation mit %d Folien aus %d Dateien erstellt.",
+            slide_count,
+            len(files),
+        )
+        response = send_file(
+            output_path,
+            as_attachment=True,
+            download_name="presentation.pptx",
+            mimetype=(
+                "application/vnd.openxmlformats-officedocument."
+                "presentationml.presentation"
+            ),
+        )
+        response.call_on_close(lambda: output_path.unlink(missing_ok=True))
+        return response
+    except ConversionError as exc:
+        output_path.unlink(missing_ok=True)
+        logger.warning("Konvertierung abgelehnt: %s", exc)
+        return jsonify(error=str(exc)), 400
+    except Exception:
+        output_path.unlink(missing_ok=True)
+        logger.exception("Unerwarteter Fehler bei der Konvertierung")
+        return jsonify(error="Die Präsentation konnte nicht erstellt werden."), 500
+
+
+if __name__ == "__main__":
+    app.run(debug=False, host="0.0.0.0", port=5000)
