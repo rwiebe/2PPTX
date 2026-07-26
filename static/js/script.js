@@ -29,20 +29,43 @@ dropZone.addEventListener('drop', async (e) => { // async machen!
     const items = e.dataTransfer.items;
     let filesToAdd = []; // Temporäre Liste für neue Dateien
 
+    function readAllDirectoryEntries(reader) {
+        return new Promise((resolve, reject) => {
+            const entries = [];
+
+            function readBatch() {
+                reader.readEntries((batch) => {
+                    if (batch.length === 0) {
+                        resolve(entries);
+                        return;
+                    }
+                    entries.push(...batch);
+                    readBatch();
+                }, reject);
+            }
+
+            readBatch();
+        });
+    }
+
     // Funktion, um rekursiv durch Ordner zu gehen
     async function scanDirectory(entry) {
-        return new Promise((resolve, reject) => {
-            if (entry.isDirectory) {
-                console.log(`Scanning directory: ${entry.name}`);
-                const reader = entry.createReader();
-                reader.readEntries(async (entries) => {
-                    // Promise.all, um auf alle Unterordner/Dateien zu warten
-                    await Promise.all(entries.map(async (innerEntry) => {
-                        await scanDirectory(innerEntry); // Rekursiver Aufruf
-                    }));
-                    resolve(); // Fertig mit diesem Verzeichnislevel
-                }, reject); // Fehler beim Lesen des Verzeichnisses
-            } else if (entry.isFile) {
+        if (entry.isDirectory) {
+            console.log(`Scanning directory: ${entry.name}`);
+            const entries = await readAllDirectoryEntries(entry.createReader());
+            entries.sort((left, right) => left.name.localeCompare(
+                right.name,
+                'de',
+                { numeric: true, sensitivity: 'base' }
+            ));
+            for (const innerEntry of entries) {
+                await scanDirectory(innerEntry);
+            }
+            return;
+        }
+
+        if (entry.isFile) {
+            await new Promise((resolve, reject) => {
                 entry.file(file => { // File-Objekt holen
                     // Prüfen, ob der Dateityp oder die Endung erlaubt ist
                     const lowerCaseName = file.name.toLowerCase();
@@ -62,23 +85,43 @@ dropZone.addEventListener('drop', async (e) => { // async machen!
                     }
                     resolve(); // Fertig mit dieser Datei
                 }, reject); // Fehler beim Holen des File-Objekts
-            } else {
-                 resolve(); // Eintrag ist weder Datei noch Ordner
-            }
-        });
+            });
+        }
     }
 
     // Starte das Scannen für jedes Top-Level-Item
     try {
         if (items && items.length > 0) {
             // Warten, bis alle Einträge (Dateien und Ordner) verarbeitet wurden
-            await Promise.all(Array.from(items).map(item => {
-                const entry = item.webkitGetAsEntry();
+            for (const item of Array.from(items)) {
+                const entry = item.webkitGetAsEntry?.();
                 if (entry) {
-                    return scanDirectory(entry);
+                    await scanDirectory(entry);
+                    continue;
                 }
-                return Promise.resolve(); // Ignoriere Items, die keine Einträge sind
-            }));
+                const file = item.getAsFile?.();
+                if (file) {
+                    const lowerCaseName = file.name.toLowerCase();
+                    const extensionMatch = allowedExtensions.some(
+                        ext => lowerCaseName.endsWith(ext)
+                    );
+                    if (
+                        allowedTypes.includes(file.type)
+                        || (file.type === "" && extensionMatch)
+                    ) {
+                        const isDuplicate = selectedFiles.some(
+                            existing => existing.name === file.name
+                                && existing.size === file.size
+                        ) || filesToAdd.some(
+                            existing => existing.name === file.name
+                                && existing.size === file.size
+                        );
+                        if (!isDuplicate) {
+                            filesToAdd.push(file);
+                        }
+                    }
+                }
+            }
         }
 
         // Füge die gesammelten Dateien zur Hauptliste hinzu
@@ -159,6 +202,7 @@ function updateFileList() {
 function removeFile(index) {
     console.log(`Entferne Datei: ${selectedFiles[index].name}`);
     selectedFiles.splice(index, 1);
+    fileInput.value = '';
     updateFileList();
     updateSubmitButton();
 }

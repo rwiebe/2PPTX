@@ -1,16 +1,16 @@
-version: '3'
 services:
   app:
     hostname: 2pptx
     image: 2pptx:main
     build: .
+    init: true
     ports:
-      - "$PORT:5000"
+      - "${PORT:-9090}:5000"
     labels:
       - "com.centurylinklabs.watchtower.enable=false"
-    restart: always
-    networks:
-      nginx_proxy_net:
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
     deploy:
       resources:
         limits:
@@ -18,10 +18,14 @@ services:
         reservations:
           memory: 96M
     environment:
-      - TZ=Europe/Berlin
-      - PYTHONUNBUFFERED=1
-      - PYTHONMALLOC=debug
-      - PYTHONTRACEMALLOC=1
+      TZ: "${TZ:-Europe/Berlin}"
+      MAX_UPLOAD_MB: "${MAX_UPLOAD_MB:-100}"
+      MAX_FILES: "${MAX_FILES:-250}"
+      MAX_PDF_PAGES: "${MAX_PDF_PAGES:-250}"
+      MAX_SLIDES: "${MAX_SLIDES:-250}"
+    networks:
+      - nginx_proxy_net
+
 networks:
   nginx_proxy_net:
     external: true

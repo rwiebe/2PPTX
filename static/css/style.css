@@ -1,4 +1,8 @@
 /* static/css/style.css */
+* {
+    box-sizing: border-box;
+}
+
 body {
     font-family: Inter, system-ui, sans-serif;
     background: radial-gradient(circle at top left, rgba(255, 140, 0, 0.2), transparent 25%),
@@ -11,6 +15,7 @@ body {
     min-height: 100vh;
     flex-direction: column;
     padding: 20px;
+    margin: 0;
 }
 
 .hero {
@@ -96,6 +101,13 @@ h1 {
     background-color: #0056b3;
 }
 
+.file-button:focus-visible,
+#submit-button:focus-visible,
+#file-list button:focus-visible {
+    outline: 3px solid rgba(0, 123, 255, 0.35);
+    outline-offset: 3px;
+}
+
 #file-list {
     list-style: none;
     padding: 0;
@@ -112,6 +124,10 @@ h1 {
     border-radius: 3px;
     font-size: 0.9em;
     color: #555;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
 }
 
 #submit-button {
@@ -145,4 +161,23 @@ h1 {
 
 #status.error {
     color: red;
+}
+
+#status.info {
+    color: #334155;
+}
+
+@media (max-width: 480px) {
+    body {
+        padding: 14px;
+    }
+
+    .container {
+        padding: 22px 16px;
+        border-radius: 18px;
+    }
+
+    #drop-zone {
+        padding: 28px 14px;
+    }
 }
