@@ -1,24 +1,60 @@
 /* static/css/style.css */
 body {
-    font-family: sans-serif;
-    background-color: #f4f4f4;
+    font-family: Inter, system-ui, sans-serif;
+    background: radial-gradient(circle at top left, rgba(255, 140, 0, 0.2), transparent 25%),
+                radial-gradient(circle at bottom right, rgba(0, 123, 255, 0.14), transparent 22%),
+                linear-gradient(180deg, #f8fafc 0%, #eef2f6 100%);
+    color: #1f2937;
     display: flex;
     justify-content: center;
     align-items: center;
     min-height: 100vh;
     flex-direction: column;
+    padding: 20px;
+}
+
+.hero {
+    display: flex;
+    align-items: center;
+    gap: 18px;
+    margin-bottom: 24px;
+    text-align: center;
+    flex-direction: column;
+}
+
+.logo {
+    width: 180px;
+    max-width: 100%;
+    border-radius: 16px;
+    box-shadow: 0 12px 30px rgba(15, 23, 42, 0.12);
+    background: white;
+    padding: 10px;
+}
+
+.hero-text h1 {
+    margin: 0;
+    font-size: clamp(1.9rem, 2.4vw, 2.8rem);
+    letter-spacing: -0.03em;
+}
+
+.hero-text p {
+    margin: 10px 0 0;
+    color: #475569;
+    font-size: 1rem;
 }
 
 .container {
-    background-color: #fff;
-    padding: 30px;
-    border-radius: 8px;
-    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+    width: min(560px, 100%);
+    background-color: rgba(255, 255, 255, 0.96);
+    padding: 32px;
+    border-radius: 24px;
+    border: 1px solid rgba(148, 163, 184, 0.18);
+    box-shadow: 0 24px 60px rgba(15, 23, 42, 0.08);
     text-align: center;
 }
 
 h1 {
-    color: #333;
+    color: #111827;
     margin-bottom: 20px;
 }
 

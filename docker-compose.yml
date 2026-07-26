@@ -18,6 +18,7 @@ services:
         reservations:
           memory: 96M
     environment:
+      - TZ=Europe/Berlin
       - PYTHONUNBUFFERED=1
       - PYTHONMALLOC=debug
       - PYTHONTRACEMALLOC=1

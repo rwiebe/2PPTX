@@ -5,9 +5,15 @@ FROM python:3.9-slim
 
 # 2. Systemabhängigkeiten installieren (PyMuPDF benötigt evtl. build tools)
 #    Debian/Ubuntu basiert:
+ARG TZ=Europe/Berlin
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
+    tzdata \
     && rm -rf /var/lib/apt/lists/*
+
+# Zeitzone konfigurieren
+ENV TZ=${TZ}
+RUN ln -fs /usr/share/zoneinfo/${TZ} /etc/localtime && dpkg-reconfigure -f noninteractive tzdata
 
 # 3. Arbeitsverzeichnis im Container setzen
 WORKDIR /app
