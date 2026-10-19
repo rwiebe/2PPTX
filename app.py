@@ -1,4 +1,7 @@
 import io
+import json
+import subprocess
+import sys
 import logging
 import os
 import tempfile
@@ -28,6 +31,7 @@ app.config.from_mapping(
     MAX_FILES=int(os.getenv("MAX_FILES", "250")),
     MAX_PDF_PAGES=int(os.getenv("MAX_PDF_PAGES", "250")),
     MAX_SLIDES=int(os.getenv("MAX_SLIDES", "250")),
+    CONVERSION_TIMEOUT=90,
     MAX_MEDIA_BYTES=int(os.getenv("MAX_MEDIA_MB", "32")) * 1024 * 1024,
 )
 
@@ -208,6 +212,39 @@ def _convert_uploads(files, workdir: Path, output_path: Path) -> int:
     return slide_count
 
 
+def _run_conversion(files, workdir: Path, output_path: Path) -> int:
+    """Keep native parsers and their resource exhaustion outside the web worker."""
+    inputs = []
+    for index, upload in enumerate(files):
+        path = workdir / f"input-{index}"
+        upload.save(path)
+        inputs.append({"path": str(path), "filename": upload.filename})
+    manifest = workdir / "request.json"
+    result_path = workdir / "result.json"
+    manifest.write_text(json.dumps({
+        "inputs": inputs,
+        "config": {key: app.config[key] for key in
+                   ("MAX_FILES", "MAX_PDF_PAGES", "MAX_SLIDES", "MAX_MEDIA_BYTES")},
+        "workdir": str(workdir), "output": str(output_path),
+        "result": str(result_path),
+    }))
+    try:
+        completed = subprocess.run(
+            [sys.executable, str(Path(__file__).with_name("conversion_worker.py")),
+             str(manifest)],
+            timeout=app.config["CONVERSION_TIMEOUT"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise ConversionError("Die Konvertierung hat das Zeitlimit überschritten.") from exc
+    if completed.returncode != 0 or not result_path.exists():
+        raise ConversionError("Die Konvertierung wurde wegen eines Verarbeitungs- oder Ressourcenlimits beendet.")
+    result = json.loads(result_path.read_text())
+    if "error" in result:
+        raise ConversionError(result["error"])
+    return result["slides"]
+
+
 @app.errorhandler(413)
 def upload_too_large(_error):
     max_mb = app.config["MAX_CONTENT_LENGTH"] // (1024 * 1024)
@@ -249,7 +286,7 @@ def _upload_files():
 
     try:
         with tempfile.TemporaryDirectory(prefix="2pptx-") as temp_dir:
-            slide_count = _convert_uploads(files, Path(temp_dir), output_path)
+            slide_count = _run_conversion(files, Path(temp_dir), output_path)
 
         logger.info(
             "Präsentation mit %d Folien aus %d Dateien erstellt.",

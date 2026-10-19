@@ -92,9 +92,11 @@ Dieses Projekt steht unter der [MIT-Lizenz](LICENSE).
 MAX_MEDIA_MB (Standard: 32) begrenzt die kumulativen aufbereiteten Bilddaten.
 Es wird pro Prozess nur eine Konvertierung gleichzeitig angenommen; weitere
 Anfragen erhalten HTTP 503 mit Retry-After. Deshalb bei einem Gunicorn-Worker
-bleiben. Das Bilddatenbudget begrenzt eingebettete Medien, nicht den gesamten
-Arbeitsspeicher von PDF-Parsern. Komplexe PDFs können weiterhin das Containerlimit
-erreichen. Der CI-Smoke-Test prüft eine normale Konvertierung und einen Upload
+bleiben. Das Bilddatenbudget begrenzt eingebettete Medien. Die eigentliche Konvertierung
+läuft zusätzlich in einem separaten Linux-Prozess mit maximal 320 MiB
+Adressraum, 60 Sekunden CPU-Zeit, 90 Sekunden Gesamtlaufzeit und 64 MiB
+Dateigröße. Ein Ressourcenlimit oder Parser-Absturz führt zu einer klaren
+Fehlerantwort; der Webprozess bleibt davon getrennt. Der CI-Smoke-Test prüft eine normale Konvertierung und einen Upload
 mit unterschiedlichen, detailreichen Full-HD-Bildern unter 512 MiB.
 
 Compose veröffentlicht den Host-Port nur auf 127.0.0.1. Ein Reverse Proxy im
@@ -105,3 +107,9 @@ Ein unhealthy-Status allein löst keinen Docker-Neustart aus.
 Der Workflow führt pytest, Syntaxchecks, pip-audit, einen Docker-Build,
 Compose-Start, Healthcheck und reale HTTP-Konvertierungen aus. Die ursprünglichen
 manuellen Angaben im PR ersetzen keinen grünen Lauf am aktuellen Commit.
+
+Der Container-CVE-Scan mit Trivy zeigt alle Schweregrade einschließlich noch
+nicht behobener CVEs; HIGH und CRITICAL lassen den Workflow fehlschlagen.
+Die Konvertierungsgrenzen setzen Linux/POSIX resource-Limits voraus.
+Der Speichergrenzwert gilt für den Konvertierungsprozess, nicht für den gesamten
+Container; dessen zusätzliche 512-MiB-Grenze bleibt aktiv.

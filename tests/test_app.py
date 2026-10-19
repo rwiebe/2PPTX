@@ -217,8 +217,53 @@ def test_broken_and_encrypted_pdf():
             assert response.status_code == 400
 
 
-def test_pixel_bomb_is_rejected(monkeypatch):
-    monkeypatch.setattr(Image, "MAX_IMAGE_PIXELS", 100)
+def test_pixel_bomb_is_rejected():
     with app.test_client() as client:
-        response = client.post("/upload", data={"files": (make_image(), "bomb.png")})
+        response = client.post("/upload", data={"files": (make_image(size=(5001, 5000)), "bomb.png")})
         assert response.status_code == 400
+
+
+def test_timeout_leaves_web_service_usable(monkeypatch):
+    monkeypatch.setitem(app.config, "CONVERSION_TIMEOUT", 0.001)
+    with app.test_client() as client:
+        response = client.post("/upload", data={"files": (make_image(), "image.png")})
+        assert response.status_code == 400
+        assert "Zeitlimit" in response.json["error"]
+        assert client.get("/healthz").status_code == 200
+        monkeypatch.setitem(app.config, "CONVERSION_TIMEOUT", 90)
+        response = client.post("/upload", data={"files": (make_image(), "image.png")})
+        assert response.status_code == 200
+        response.close()
+
+
+def test_native_worker_crash_is_clean_error(monkeypatch):
+    import app as module
+    import subprocess
+    original = subprocess.run
+
+    def crash(command, **kwargs):
+        return original([command[0], "-c", "import os, signal; os.kill(os.getpid(), signal.SIGKILL)"],
+                        **kwargs)
+    monkeypatch.setattr(module.subprocess, "run", crash)
+    with app.test_client() as client:
+        response = client.post("/upload", data={"files": (make_image(), "image.png")})
+        assert response.status_code == 400
+        assert "Ressourcenlimits" in response.json["error"]
+        assert client.get("/healthz").status_code == 200
+
+
+def test_worker_memory_limit_is_enforced_by_os():
+    import subprocess
+    import sys
+    code = """from conversion_worker import set_resource_limits
+set_resource_limits()
+try:
+    allocation = bytearray(400 * 1024 * 1024)
+except MemoryError:
+    print('limited')
+else:
+    raise SystemExit('memory limit not enforced')
+"""
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True,
+                            text=True, timeout=10, check=True)
+    assert result.stdout.strip() == "limited"
