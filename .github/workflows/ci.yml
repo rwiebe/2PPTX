@@ -37,6 +37,9 @@ jobs:
           test "$(docker inspect -f '{{.Config.User}}' "$id")" = app
           test "$(docker inspect -f '{{.HostConfig.Memory}}' "$id")" -eq 536870912
           test "$(docker inspect -f '{{.State.Health.Status}}' "$id")" = healthy
+      - name: Verify runtime package cleanup
+        run: |
+          docker compose exec -T app python -c "from pathlib import Path; db=Path('/lib/apk/db/installed').read_text(); names={line[2:] for line in db.splitlines() if line.startswith('P:')}; forbidden={'util-linux','mount','bsdutils','perl','perl-base','systemd'}; assert not names & forbidden, names & forbidden; import sys; assert sys.version_info[:2] == (3,12)"
       - run: python scripts/http_smoke.py
       - name: Verify output cleanup
         run: |

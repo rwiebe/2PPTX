@@ -113,3 +113,14 @@ nicht behobener CVEs; HIGH und CRITICAL lassen den Workflow fehlschlagen.
 Die Konvertierungsgrenzen setzen Linux/POSIX resource-Limits voraus.
 Der Speichergrenzwert gilt für den Konvertierungsprozess, nicht für den gesamten
 Container; dessen zusätzliche 512-MiB-Grenze bleibt aktiv.
+
+
+## Container-Basis
+
+Das Laufzeit-Image verwendet Wolfi mit Python 3.12, libstdc++ und Zeitzonendaten
+anstelle von Debian Slim. Die Python-Abhängigkeiten werden in einer separaten
+Build-Stufe installiert; ins finale Image kommen nur die virtuelle Umgebung,
+Anwendung und Webdateien. Anwendung und Bibliotheken sind für den Benutzer app
+nicht schreibbar. Die APK-Paketdatenbank bleibt für vollständige CVE-Scans erhalten.
+Der Build benötigt Zugriff auf cgr.dev, packages.wolfi.dev und PyPI. Das Image
+verwendet weiterhin glibc und die bisherigen manylinux-Wheels; Python bleibt 3.12.
