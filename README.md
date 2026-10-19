@@ -124,3 +124,8 @@ Anwendung und Webdateien. Anwendung und Bibliotheken sind für den Benutzer app
 nicht schreibbar. Die APK-Paketdatenbank bleibt für vollständige CVE-Scans erhalten.
 Der Build benötigt Zugriff auf cgr.dev, packages.wolfi.dev und PyPI. Das Image
 verwendet weiterhin glibc und die bisherigen manylinux-Wheels; Python bleibt 3.12.
+
+Pip und ensurepip samt Bootstrap-Wheels werden nach dem Build aus dem finalen
+Image entfernt. Laufende Container installieren keine weiteren Python-Pakete;
+Änderungen an Abhängigkeiten erfolgen ausschließlich durch einen neuen Build.
+Die Betriebssystem-Paketdatenbank wird dabei nicht entfernt oder verändert.

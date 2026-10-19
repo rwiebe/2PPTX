@@ -22,6 +22,13 @@ RUN python -m venv /app/venv \
 
 FROM runtime AS final
 COPY --from=dependencies /app/venv /app/venv
+
+# Installers are build tools, not service dependencies. Remove their actual code
+# (including vendored pkg_resources) and ensurepip's bootstrap wheels. Keep the
+# OS package database intact; this pruning is part of the runtime image contract.
+RUN /app/venv/bin/python -m pip uninstall --yes pip \
+    && rm -rf /usr/share/python-wheels /usr/lib/python3.12/ensurepip
+
 COPY app.py conversion_worker.py ./
 COPY static ./static
 COPY templates ./templates
