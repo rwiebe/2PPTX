@@ -31,8 +31,6 @@ jobs:
           ignore-unfixed: false
           exit-code: '0'
           format: table
-      - name: Block high and critical container vulnerabilities
-        run: trivy image --scanners vuln --severity HIGH,CRITICAL --exit-code 1 2pptx:main
       - name: Verify container configuration
         run: |
           id=$(docker compose ps -q app)
@@ -44,6 +42,8 @@ jobs:
         run: |
           sleep 1
           docker compose exec -T app python -c "from pathlib import Path; assert not list(Path('/tmp').glob('*.pptx'))"
+      - name: Block high and critical container vulnerabilities
+        run: trivy image --scanners vuln --severity HIGH,CRITICAL --exit-code 1 2pptx:main
       - name: Container logs
         if: failure()
         run: docker compose logs
