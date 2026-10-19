@@ -1,0 +1,58 @@
+name: Conversion checks
+on:
+  pull_request:
+  push:
+    branches: [main, agent/harden-conversion-service]
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r requirements-dev.txt pip-audit
+      - run: pytest
+      - run: python -m compileall -q app.py conversion_worker.py tests scripts
+      - run: node --check static/js/script.js
+      - run: pip-audit -r requirements.txt
+      - run: docker compose config --quiet
+      - run: docker network create nginx_proxy_net
+      - run: docker compose up --build --wait --wait-timeout 120
+      - name: Scan container OS and application dependencies
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: 2pptx:main
+          scanners: vuln
+          severity: UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL
+          ignore-unfixed: false
+          exit-code: '0'
+          format: table
+      - name: Verify container configuration
+        run: |
+          id=$(docker compose ps -q app)
+          test "$(docker inspect -f '{{.Config.User}}' "$id")" = app
+          test "$(docker inspect -f '{{.HostConfig.Memory}}' "$id")" -eq 536870912
+          test "$(docker inspect -f '{{.State.Health.Status}}' "$id")" = healthy
+      - name: Verify runtime package cleanup
+        run: |
+          docker compose exec -T app python -c "from pathlib import Path; db=Path('/lib/apk/db/installed').read_text(); names={line[2:] for line in db.splitlines() if line.startswith('P:')}; forbidden={'util-linux','mount','bsdutils','perl','perl-base','systemd'}; assert not names & forbidden, names & forbidden; import sys; assert sys.version_info[:2] == (3,12)"
+      - name: Verify build tools are absent at runtime
+        run: |
+          docker compose exec -T app python -c "import importlib.util; from pathlib import Path; assert importlib.util.find_spec('pip') is None; assert importlib.util.find_spec('ensurepip') is None; assert not list(Path('/usr/share/python-wheels').glob('*.whl'))"
+      - run: python scripts/http_smoke.py
+      - name: Verify output cleanup
+        run: |
+          sleep 1
+          docker compose exec -T app python -c "from pathlib import Path; assert not list(Path('/tmp').glob('*.pptx'))"
+      - name: Block high and critical container vulnerabilities
+        run: trivy image --scanners vuln --severity HIGH,CRITICAL --exit-code 1 2pptx:main
+      - name: Container logs
+        if: failure()
+        run: docker compose logs
+      - name: Cleanup
+        if: always()
+        run: docker compose down

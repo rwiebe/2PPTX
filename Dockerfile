@@ -1,44 +1,43 @@
-# Dockerfile
+FROM cgr.dev/chainguard/wolfi-base:latest AS runtime
 
-# 1. Basisimage auswählen (Python 3.9 als Beispiel)
-FROM python:3.9-slim
-
-# 2. Systemabhängigkeiten installieren (PyMuPDF benötigt evtl. build tools)
-#    Debian/Ubuntu basiert:
 ARG TZ=Europe/Berlin
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
-    tzdata \
-    && rm -rf /var/lib/apt/lists/*
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    TZ=${TZ} \
+    PATH="/app/venv/bin:${PATH}"
 
-# Zeitzone konfigurieren
-ENV TZ=${TZ}
-RUN ln -fs /usr/share/zoneinfo/${TZ} /etc/localtime && dpkg-reconfigure -f noninteractive tzdata
+# Keep Python's major/minor version stable and install only runtime libraries.
+# Retain APK metadata so scanners can inventory every OS package.
+RUN apk add --no-cache python-3.12 libstdc++ tzdata \
+    && addgroup -S app \
+    && adduser -S -G app -h /app app
 
-# 3. Arbeitsverzeichnis im Container setzen
 WORKDIR /app
 
-# 4. requirements.txt kopieren und Abhängigkeiten installieren
+FROM runtime AS dependencies
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN python -m venv /app/venv \
+    && /app/venv/bin/python -m pip install --no-cache-dir --disable-pip-version-check \
+       --only-binary=:all: -r requirements.txt
 
-# 5. Restlichen Anwendungscode kopieren
-COPY . .
+FROM runtime AS final
+COPY --from=dependencies /app/venv /app/venv
 
-# 6. Port freigeben, auf dem Flask läuft (muss mit app.run übereinstimmen)
+# Installers are build tools, not service dependencies. Remove their actual code
+# (including vendored pkg_resources) and ensurepip's bootstrap wheels. Keep the
+# OS package database intact; this pruning is part of the runtime image contract.
+RUN /app/venv/bin/python -m pip uninstall --yes pip \
+    && rm -rf /usr/share/python-wheels /usr/lib/python3.12/ensurepip
+
+COPY app.py conversion_worker.py ./
+COPY static ./static
+COPY templates ./templates
+
+# Application and dependencies remain root-owned and read-only for the service.
+USER app
 EXPOSE 5000
 
-# 7. Befehl zum Starten der Anwendung definieren
-#    Verwendet Flask's eingebauten Server (gut für Entwicklung, für Produktion Gunicorn o.ä. erwägen)
-#    Host 0.0.0.0 ist wichtig, damit die App von außerhalb des Containers erreichbar ist.
-CMD ["flask", "run", "--host=0.0.0.0", "--port=5000"]
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/healthz', timeout=3)"]
 
-# Alternativ für Produktion mit Gunicorn (müsste zu requirements.txt hinzugefügt werden):
-# CMD ["gunicorn", "--bind", "0.0.0.0:5000", "app:app"]
-
-# Memory Limits für Python hinzufügen
-ENV PYTHONUNBUFFERED=1
-ENV PYTHONMALLOC=debug
-ENV PYTHONTRACEMALLOC=1
-
-# Container Memory Limits in docker-compose.yml setzen
+CMD ["python", "-m", "gunicorn", "--bind=0.0.0.0:5000", "--workers=1", "--threads=2", "--timeout=300", "--access-logfile=-", "app:app"]
