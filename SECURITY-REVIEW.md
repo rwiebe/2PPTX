@@ -3,7 +3,27 @@
 Head introducing the scan and process isolation: 79619d1.
 First PR scan: https://github.com/rwiebe/2PPTX/actions/runs/39294393122
 
-## Outcome
+## Current runtime cleanup
+
+The Dockerfile now uses Wolfi with Python 3.12, libstdc++ and tzdata. The
+application dependencies are installed in a separate build stage, and only
+the virtual environment and application assets are copied into the final stage.
+The service runs as app with root-owned application files.
+
+The initial Wolfi scan found zero OS CVEs, but detected a vendored setuptools
+component in pip. The final stage therefore uninstalls pip and removes
+ensurepip and its bootstrap wheels. This removes actual installer code, not
+scanner metadata. The APK package database is retained. The py3-pip-wheel package
+record remains in the OS inventory although its optional bootstrap files are
+pruned from the service image; installing packages at runtime is unsupported.
+
+CI checks that the former unnecessary Debian tools and Python installation
+tools are absent, Python remains 3.12, and real conversion still succeeds.
+The full CVE scan includes all severities and unfixed CVEs. HIGH/CRITICAL findings
+remain blocking without ignore rules or waivers. A successful run at the current
+head is required before release.
+
+## Historical Debian scan outcome
 
 The full Trivy scan ran successfully, but the HIGH/CRITICAL policy gate failed.
 It reports 44 HIGH package findings representing eight distinct CVEs in Debian
@@ -50,10 +70,10 @@ These are resource limits, not a security sandbox for arbitrary native-code
 execution. The converter retains the container's unprivileged identity and
 filesystem/network permissions. Proxy access and rate limits remain necessary.
 
-## Release decision
+## Historical Debian release decision
 
-Do not describe the image as vulnerability-free and do not merge under the
-current strict gate. A patched stable image, a separately tested smaller runtime
-without the affected components, or an explicit reviewed and narrowly scoped
-risk disposition is still needed. The workflow runs functional/container tests
+The Debian-based image was blocked under the strict gate. The smaller Wolfi
+runtime above replaces that image; the historical Debian package findings are
+not ignored or waived in the scanner. Do not describe any image as inherently
+vulnerability-free: the current image must pass the live scan. The workflow runs functional/container tests
 before applying the blocking CVE gate so a scan finding does not hide test results.
