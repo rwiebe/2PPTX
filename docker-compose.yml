@@ -5,7 +5,7 @@ services:
     build: .
     init: true
     ports:
-      - "${PORT:-9090}:5000"
+      - "127.0.0.1:${PORT:-9090}:5000"
     labels:
       - "com.centurylinklabs.watchtower.enable=false"
     restart: unless-stopped
@@ -22,6 +22,7 @@ services:
       MAX_UPLOAD_MB: "${MAX_UPLOAD_MB:-100}"
       MAX_FILES: "${MAX_FILES:-250}"
       MAX_PDF_PAGES: "${MAX_PDF_PAGES:-250}"
+      MAX_MEDIA_MB: "${MAX_MEDIA_MB:-32}"
       MAX_SLIDES: "${MAX_SLIDES:-250}"
     networks:
       - nginx_proxy_net

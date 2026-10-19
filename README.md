@@ -86,3 +86,22 @@ mit TLS und einem passenden Request-Limit vorgeschaltet werden.
 ## Lizenz
 
 Dieses Projekt steht unter der [MIT-Lizenz](LICENSE).
+
+## Sicherheits- und Betriebsgrenzen
+
+MAX_MEDIA_MB (Standard: 32) begrenzt die kumulativen aufbereiteten Bilddaten.
+Es wird pro Prozess nur eine Konvertierung gleichzeitig angenommen; weitere
+Anfragen erhalten HTTP 503 mit Retry-After. Deshalb bei einem Gunicorn-Worker
+bleiben. Das Bilddatenbudget begrenzt eingebettete Medien, nicht den gesamten
+Arbeitsspeicher von PDF-Parsern. Komplexe PDFs können weiterhin das Containerlimit
+erreichen. Der CI-Smoke-Test prüft eine normale Konvertierung und einen Upload
+mit unterschiedlichen, detailreichen Full-HD-Bildern unter 512 MiB.
+
+Compose veröffentlicht den Host-Port nur auf 127.0.0.1. Ein Reverse Proxy im
+externen Netzwerk nginx_proxy_net erreicht app:5000 direkt. Für öffentlichen
+Betrieb TLS, Zugriffsschutz und Request-/Rate-Limits am Proxy konfigurieren.
+Ein unhealthy-Status allein löst keinen Docker-Neustart aus.
+
+Der Workflow führt pytest, Syntaxchecks, pip-audit, einen Docker-Build,
+Compose-Start, Healthcheck und reale HTTP-Konvertierungen aus. Die ursprünglichen
+manuellen Angaben im PR ersetzen keinen grünen Lauf am aktuellen Commit.

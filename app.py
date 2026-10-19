@@ -2,6 +2,7 @@ import io
 import logging
 import os
 import tempfile
+import threading
 import warnings
 from pathlib import Path
 
@@ -27,10 +28,12 @@ app.config.from_mapping(
     MAX_FILES=int(os.getenv("MAX_FILES", "250")),
     MAX_PDF_PAGES=int(os.getenv("MAX_PDF_PAGES", "250")),
     MAX_SLIDES=int(os.getenv("MAX_SLIDES", "250")),
+    MAX_MEDIA_BYTES=int(os.getenv("MAX_MEDIA_MB", "32")) * 1024 * 1024,
 )
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 logger = logging.getLogger(__name__)
+conversion_slot = threading.BoundedSemaphore(1)
 
 
 class ConversionError(ValueError):
@@ -147,6 +150,7 @@ def _convert_uploads(files, workdir: Path, output_path: Path) -> int:
     prs.slide_width = Emu(SLIDE_WIDTH_EMU)
     prs.slide_height = Emu(SLIDE_HEIGHT_EMU)
     slide_count = 0
+    media_bytes = 0
 
     for index, uploaded_file in enumerate(files):
         display_name = uploaded_file.filename or f"Datei {index + 1}"
@@ -169,6 +173,9 @@ def _convert_uploads(files, workdir: Path, output_path: Path) -> int:
                                 "Die Präsentation darf insgesamt höchstens "
                                 f"{app.config['MAX_SLIDES']} {slide_word} enthalten."
                             )
+                        media_bytes += page_stream.getbuffer().nbytes
+                        if media_bytes > app.config["MAX_MEDIA_BYTES"]:
+                            raise ConversionError("Die aufbereiteten Bilddaten überschreiten das Speicherbudget.")
                         _add_slide(prs, page_stream)
                         slide_count += 1
                     finally:
@@ -184,6 +191,9 @@ def _convert_uploads(files, workdir: Path, output_path: Path) -> int:
                             "Die Präsentation darf insgesamt höchstens "
                             f"{app.config['MAX_SLIDES']} {slide_word} enthalten."
                         )
+                    media_bytes += image_stream.getbuffer().nbytes
+                    if media_bytes > app.config["MAX_MEDIA_BYTES"]:
+                        raise ConversionError("Die aufbereiteten Bilddaten überschreiten das Speicherbudget.")
                     _add_slide(prs, image_stream)
                     slide_count += 1
                 finally:
@@ -216,6 +226,15 @@ def health():
 
 @app.post("/upload")
 def upload_files():
+    if not conversion_slot.acquire(blocking=False):
+        return jsonify(error="Eine Konvertierung läuft bereits. Bitte erneut versuchen."), 503, {"Retry-After": "5"}
+    try:
+        return _upload_files()
+    finally:
+        conversion_slot.release()
+
+
+def _upload_files():
     files = [file for file in request.files.getlist("files") if file.filename]
     if not files:
         return jsonify(error="Keine Dateien ausgewählt."), 400
@@ -246,6 +265,7 @@ def upload_files():
                 "presentationml.presentation"
             ),
         )
+        response.direct_passthrough = False
         response.call_on_close(lambda: output_path.unlink(missing_ok=True))
         return response
     except ConversionError as exc:

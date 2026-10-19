@@ -135,3 +135,90 @@ def test_total_slide_limit_is_enforced_across_files():
 
     assert response.status_code == 400
     assert "höchstens 1 Folie" in response.get_json()["error"]
+
+
+def test_media_budget_rejects_output(monkeypatch):
+    monkeypatch.setitem(app.config, "MAX_MEDIA_BYTES", 1)
+    with app.test_client() as client:
+        response = client.post("/upload", data={"files": (make_image(), "image.png")})
+        assert response.status_code == 400
+        assert "Speicherbudget" in response.json["error"]
+
+
+def test_concurrent_conversion_is_rejected():
+    from app import conversion_slot
+    with conversion_slot:
+        with app.test_client() as client:
+            response = client.post("/upload")
+            assert response.status_code == 503
+            assert response.headers["Retry-After"] == "5"
+
+
+def test_upload_limit(monkeypatch):
+    monkeypatch.setitem(app.config, "MAX_CONTENT_LENGTH", 32)
+    with app.test_client() as client:
+        response = client.post("/upload", data={"files": (make_image(), "image.png")})
+        assert response.status_code == 413
+        assert "error" in response.json
+
+
+def test_file_limit(monkeypatch):
+    monkeypatch.setitem(app.config, "MAX_FILES", 1)
+    with app.test_client() as client:
+        response = client.post("/upload", data={"files": [
+            (make_image(), "one.png"), (make_image(), "two.png")]})
+        assert response.status_code == 400
+
+
+def test_valid_then_broken_file_is_not_partial_success():
+    with app.test_client() as client:
+        response = client.post("/upload", data={"files": [
+            (make_image(), "one.png"), (io.BytesIO(b"broken"), "two.png")]})
+        assert response.status_code == 400
+        assert response.is_json
+
+
+def test_output_cleanup_after_download_and_abort(tmp_path, monkeypatch):
+    import app as module
+    original = module.tempfile.NamedTemporaryFile
+    monkeypatch.setattr(module.tempfile, "NamedTemporaryFile",
+                        lambda **kwargs: original(dir=tmp_path, **kwargs))
+    for consume in (True, False):
+        with app.test_client() as client:
+            response = client.post("/upload", data={"files": (make_image(), "image.png")},
+                                   buffered=False)
+            assert response.status_code == 200
+            assert list(tmp_path.glob("*.pptx"))
+            if consume:
+                response.get_data()
+            response.close()
+            assert not list(tmp_path.glob("*.pptx"))
+
+
+def test_large_image_is_downscaled():
+    with app.test_client() as client:
+        response = client.post("/upload", data={
+            "files": (make_image(size=(3840, 2160)), "large.png")})
+        presentation = Presentation(io.BytesIO(response.get_data()))
+        response.close()
+    with Image.open(io.BytesIO(presentation.slides[0].shapes[0].image.blob)) as image:
+        assert image.size == (1920, 1080)
+
+
+def test_broken_and_encrypted_pdf():
+    document = fitz.open()
+    document.new_page()
+    encrypted = document.tobytes(encryption=fitz.PDF_ENCRYPT_AES_256,
+                                owner_pw="owner", user_pw="secret")
+    document.close()
+    for data in (b"not a PDF", encrypted):
+        with app.test_client() as client:
+            response = client.post("/upload", data={"files": (io.BytesIO(data), "bad.pdf")})
+            assert response.status_code == 400
+
+
+def test_pixel_bomb_is_rejected(monkeypatch):
+    monkeypatch.setattr(Image, "MAX_IMAGE_PIXELS", 100)
+    with app.test_client() as client:
+        response = client.post("/upload", data={"files": (make_image(), "bomb.png")})
+        assert response.status_code == 400
